@@ -1,0 +1,268 @@
+---
+title: "analysis_assignment3"
+author: "sofiascharf"
+date: "2026-01-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load packages and data
+```{r loading}
+pacman::p_load(tidyverse, ggplot2, car, lme4)
+
+recipes <- read_csv("recipes.csv")
+# print dimensions
+
+print(dim(recipes))
+```
+
+## Data cleaning 
+First we subset for air fryer and oven:
+```{r clean swoosh}
+# 1: subset for air fryer and oven
+recipes_cleaned <- recipes %>% 
+  mutate(search_text = tolower(paste(recipe_title, directions))) %>%
+  mutate(
+    has_airfryer = str_detect(search_text, "air fryer|airfryer"),
+    has_oven = str_detect(search_text, "\\boven\\b") # \\b ensures we don't match 'proven'
+  ) %>%
+  filter(has_airfryer != has_oven) %>%
+  mutate(RecipeType = ifelse(has_airfryer, "Airfryer", "Oven")) %>%
+  select(-search_text)
+
+# print new dimensions
+print(dim(recipes_cleaned))
+```
+
+Quick substep to create a list counter function:
+```{r list counter}
+count_items <- function(x) {
+  if (is.na(x) || x == "" || x == "[]") return(0)
+  # Remove the brackets and split by the quote-comma-quote pattern
+  # or simply count the occurrences of '",' which marks the end of an item
+  return(str_count(x, '", "') + 1)
+}
+```
+
+
+Then we compute our new variables, and remove the ones we are not interested in:
+```{r variables and subset}
+final_recipes <- recipes_cleaned %>%
+  mutate(
+    # 1. Categorization Logic
+    search_text = tolower(paste(recipe_title, description)),
+    has_airfryer = str_detect(search_text, "air fryer|airfryer"),
+    has_oven = str_detect(search_text, "\\boven\\b"),
+    
+    recipe_type_bin = case_when(
+      has_airfryer & !has_oven ~ 1,
+      !has_airfryer & has_oven ~ 0,
+      TRUE ~ NA_real_
+    )
+  ) %>%
+  filter(!is.na(recipe_type_bin)) %>%
+  mutate(
+    # Count items inside the string 
+    # We use a regex to count the commas that separate quoted items
+    num_ingredients = str_count(ingredients, '", "') + 1,
+    
+    # 3. Directions: 
+    # Clean the string to remove brackets and quotes before counting words
+    clean_directions_text = directions %>%
+      str_remove_all('^\\["|"\\]$') %>% # Remove outer [" and "]
+      str_replace_all('", "', " "),      # Replace separators with a space
+    
+    # N(Words)
+    n_words = str_count(clean_directions_text, "\\w+"),
+    
+    # M(WordLength)
+    # Strip everything except letters/numbers for character count
+    just_chars = str_replace_all(clean_directions_text, "[^a-zA-Z0-9]", ""),
+    avg_word_length = nchar(just_chars) / n_words
+  ) %>%
+  select(n_words, avg_word_length, recipe_type_bin, num_ingredients)
+
+# Check the results
+summary(final_recipes$num_ingredients)
+```
+
+Check how many of each type
+```{r summary by type}
+# Descriptive Summary Table
+recipe_summary <- final_recipes %>%
+  group_by(recipe_type_bin) %>%
+  summarise(
+    n_recipes = n(),
+    
+    # Ingredients: Mean and Standard Deviation
+    avg_ingredients = mean(num_ingredients, na.rm = TRUE),
+    sd_ingredients  = sd(num_ingredients, na.rm = TRUE),
+    
+    # Word Count: Mean and Standard Deviation
+    avg_words = mean(n_words, na.rm = TRUE),
+    sd_words  = sd(n_words, na.rm = TRUE),
+    
+    # Word Length: Mean and Standard Deviation
+    avg_lexical_length = mean(avg_word_length, na.rm = TRUE),
+    sd_lexical_length  = sd(avg_word_length, na.rm = TRUE)
+  ) %>%
+  # Label the dummy codes for clarity
+  mutate(recipe_type = ifelse(recipe_type_bin == 1, "Airfryer", "Oven")) %>%
+  select(recipe_type, n_recipes, everything(), -recipe_type_bin)
+
+# Print the table
+print(recipe_summary)
+```
+## Assumptions check 
+```{r check assumptions}
+
+# 1. Check Distribution of Dependent Variables
+hist_words <- ggplot(final_recipes, aes(x = n_words)) + 
+  geom_histogram(fill = "steelblue", bins = 30) +
+  labs(title = "Distribution of Word Counts", subtitle = "Checking for Skewness")
+
+hist_length <- ggplot(final_recipes, aes(x = avg_word_length)) + 
+  geom_histogram(fill = "darkorange", bins = 30) +
+  labs(title = "Distribution of Word Length", subtitle = "Checking for Normality")
+
+# 2. Check Linearity
+scatter_plot <- ggplot(final_recipes, aes(x = num_ingredients, y = n_words, color = factor(recipe_type_bin))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm") +
+  labs(title = "Linearity Check", subtitle = "Do the slopes look straight?")
+
+# 3. Check for Multicollinearity
+# We run a simple lm just to check VIF (Variance Inflation Factor)
+vif_model <- lm(n_words ~ recipe_type_bin + num_ingredients, data = final_recipes)
+vif_values <- vif(vif_model)
+
+print(vif_values) # Values > 5 indicate problematic correlation
+hist_words
+hist_length
+scatter_plot
+```
+
+
+```{r check more }
+# Run a temporary model to check residuals
+temp_model <- lm(n_words ~ recipe_type_bin * num_ingredients, data = final_recipes)
+
+# 1. Check Normality (Q-Q Plot)
+# If the points follow the line, your residuals are normal.
+qqnorm(residuals(temp_model))
+qqline(residuals(temp_model), col = "red")
+
+# 2. Check Homoscedasticity (Residuals vs Fitted)
+# You want a random cloud of points. A "funnel" shape means you need a log-transform.
+plot(temp_model, which = 1)
+```
+```{r log transform of n words}
+final_recipes <- final_recipes %>% 
+  mutate(log_n_words = log(n_words))
+```
+
+```{r check again}
+# Run a temporary model to check residuals
+temp_model <- lm(log_n_words ~ recipe_type_bin * num_ingredients, data = final_recipes)
+
+# 1. Check Normality (Q-Q Plot)
+# If the points follow the line, your residuals are normal.
+qqnorm(residuals(temp_model))
+qqline(residuals(temp_model), col = "red")
+
+# 2. Check Homoscedasticity (Residuals vs Fitted)
+# You want a random cloud of points. A "funnel" shape means you need a log-transform.
+plot(temp_model, which = 1)
+```
+Amazing, let's go!
+
+## Comparing the models
+
+First we build all the models:
+
+```{r define models}
+
+### --- LOG WORD COUNT MODELS (Procedural Complexity) ---
+# Model 1: Main Effects
+m1 <- lm(log_n_words ~ recipe_type_bin + num_ingredients, 
+           data = final_recipes)
+
+# Model 2: Interaction Effect
+m2 <- lm(log_n_words ~ recipe_type_bin * num_ingredients,
+           data = final_recipes)
+
+### --- WORD LENGTH MODELS (Lexical Complexity) ---
+# Model 3: Main Effects
+m3 <- lm(avg_word_length ~ recipe_type_bin + num_ingredients,
+           data = final_recipes)
+
+# Model 4: Interaction Effect
+m4 <- lm(avg_word_length ~ recipe_type_bin * num_ingredients,
+           data = final_recipes)
+```
+
+Statistical comparison
+
+```{r stats}
+# Summarize Word Count Models
+summary(m1) # Main Effects
+summary(m2) # Interaction
+
+# Summarize Word Length Models
+summary(m3) # Main Effects
+summary(m4) # Interaction
+```
+
+
+```{r model comparisons}
+print("--- Comparison for Log Word Count ---")
+anova(m1, m2)
+
+print("--- Comparison for Average Word Length ---")
+anova(m3, m4)
+```
+
+
+## Plots
+```{r plittin}
+# plot a: count words interaction
+plot_words <- ggplot(final_recipes, aes(x = num_ingredients, y = log_n_words, color = factor(recipe_type_bin))) +
+  # Add raw points with some transparency (jittered to prevent overlap on the ordinal x-axis)
+  geom_jitter(alpha = 0.4, width = 0.2) + 
+  # Add the regression lines from the models
+  geom_smooth(method = "lm", se = TRUE, size = 1.2) +
+  # Styling
+  scale_color_viridis_d(begin = 0.2, end = 0.8, labels = c("Oven", "Airfryer")) +
+  labs(
+    title = "Descriptive Density: Oven vs. Airfryer",
+    subtitle = "Interaction between Recipe Type and Ingredient Count",
+    x = "Number of Ingredients",
+    y = "Log(Number of Words)",
+    color = "Recipe Type"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold"))
+
+# plot B: word length
+plot_length <- ggplot(final_recipes, aes(x = num_ingredients, y = avg_word_length, color = factor(recipe_type_bin))) +
+  geom_jitter(alpha = 0.4, width = 0.2) + 
+  geom_smooth(method = "lm", se = TRUE, size = 1.2) +
+  scale_color_viridis_d(begin = 0.2, end = 0.8, labels = c("Oven", "Airfryer"), option = "plasma") +
+  labs(
+    title = "Lexical Complexity",
+    subtitle = "Average Word Length as a function of Recipe Type",
+    x = "Number of Ingredients",
+    y = "Avg. Character Count per Word",
+    color = "Recipe Type"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom", plot.title = element_text(face = "bold"))
+
+# Display the plots
+print(plot_words)
+print(plot_length)
+```
+
