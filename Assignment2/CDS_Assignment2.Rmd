@@ -1,0 +1,177 @@
+---
+title: "Assignment2_CDS"
+author: "sofiascharf"
+date: "2026-01-07"
+output:
+  html_document: default
+  pdf_document: default
+---
+## Part 1
+```{r setup, include=FALSE}
+pacman::p_load(tidyverse, ggplot2, ggrepel, dslabs, ggthemes, grDevices, car, lme4,
+               ordinal)
+
+```
+
+### Load dataset
+
+
+```{r dataset}
+divorce <- dslabs::divorce_margarine
+head(divorce)
+```
+
+
+### Plot
+```{r plot}
+ggplot(divorce, # init plot and choose axes n df
+       aes(x = margarine_consumption_per_capita, 
+           y = divorce_rate_maine, 
+           color = year)) +
+  geom_point(size = 6) + # point size
+  scale_colour_gradientn(colours = terrain.colors(7)) + # set palette
+  ggtitle("Divorce Rate in Maine over Margarine Consumption per Capita") +
+  theme_classic()
+```
+Already looks like there could be a linear relationship.
+
+### Stats
+```{r correlation tests}
+cor.test(divorce$divorce_rate_maine, 
+    divorce$margarine_consumption_per_capita,
+    method = "spearman") # continous variables
+```
+According to the results of our correlations test, there is a strong, significant linear relationship between margarine consumption per capita and divorce rate in Maine (*rho* = *0.98*, *p* < *.001*).
+
+
+## Part 2 
+### Load and subset
+```{r car}
+vocab <- carData::GSSvocab
+head(vocab)
+```
+
+```{r subset}
+vocab <- vocab %>% 
+  filter(year == 1978, fill.NA=TRUE)
+head(vocab)
+```
+
+### Initial plot
+```{r plot to see}
+ggplot(vocab, # init plot and choose axes n df
+       aes(x = educGroup, 
+           y = vocab, 
+           col = educGroup,
+           fill = educGroup)) +
+  geom_boxplot(outlier.size = 0.1) +
+  theme_classic() +
+  stat_summary(
+    fun = median,       
+    geom = "crossbar",        
+    aes(group = educGroup),   
+    color = "white",       #  color for the median line
+    size = 0.25,            # Set the thickness of the median line.
+    width = 1          # Set the width of the median line
+  )
+
+```
+Here, it looks like there could be a linear relationship.
+
+### Fit model
+I try an lm:
+```{r fit lm}
+fit_vocab <- lm(
+  formula = vocab ~ educGroup,
+  data = vocab
+)
+```
+
+```{r check assumptions}
+par(mfrow = c(2, 2))
+plot(fit_vocab)
+```
+Woww we see something looks really off with independence and homoscedasticity. But normality and outliera don't look too bad. It's because our data is not continous.
+
+Normally I would do an ordinal regression now, but to report the stats I've been asked for, I'll ignore it for now. 
+```{r summarrrryy}
+summary(fit_vocab)
+```
+
+Education group significantly predicted vocabulary performance, *F*(4, 1479) = 132.90, *p* < .001, explaining 26.2% of the variance in scores (*R²* = .262).
+
+Compared to individuals with less than 12 years of education, vocabulary scores were significantly higher for participants with 12 years (*b* = 1.49, *SE* = 0.12, *p* < .001) and 13–15 years (*b* = 2.04, *SE* = 0.15, *p* < .001), with scores being 1.5-2 points higher. It seems that at 15+, which would approximately be the cutoff for master's and doctorate degrees, the estimated increment in vocabulary scores jumps a bit. The model estimated that people with 16 years of education had approximately 3.23 points higher score than people with less than 12 years (**b* = 3.23, *SE* = 0.20, *p* < .001), and more than 16 years of education (*b* = 3.77, *SE* = 0.21, *p* < .001) warranted a score approximately 3.77 times higher than baseline. Vocabulary performance increased with higher levels of educational attainment.
+
+### Including nativeness
+
+I will do the plot again: 
+```{r plot with native}
+# for the plot I want to exclude NA 
+plot_data <- subset(vocab, !is.na(nativeBorn))
+
+ggplot(
+  plot_data,
+  aes(
+    x = educGroup,
+    y = vocab,
+    fill = nativeBorn,
+    col  = nativeBorn
+  )
+) +
+  geom_boxplot(
+    position = position_dodge(width = 0.75),
+    outlier.size = 0.1
+  ) +
+  stat_summary(
+    fun = mean,
+    geom = "crossbar",
+    aes(group = nativeBorn),
+    position = position_dodge(width = 0.75),
+    color = "white",
+    size = 0.25,
+    width = 0.6
+  ) +
+  theme_classic()
+
+
+```
+Okay, it looks like both for no and yes, the plots follow pretty similar trajectories. Here, it looks like nativeness could make a difference at the shorter durations of education, but less and less as education groups progresses. We will explore this furhther in our final model, but first we will just look at what including nativeness as a predictor alongside education group does:
+
+Now we fit our model.
+```{r new model yay}
+fit_vocab2 <- lm(
+  formula = vocab ~ educGroup + nativeBorn,
+  data = vocab
+)
+
+summary(fit_vocab2)
+```
+A multiple linear regression model was fitted to examine vocabulary scores as a function of educational attainment and nativity status. The overall model was statistically significant, *F*(5, 1477) = 109.90, *p* < .001, explaining 27% of the variance in vocabulary performance (*R²* = .27).
+
+
+We saw again that educational groups predicted vocabulary, as in the previous model. 
+
+In addition, native-born participants demonstrated significantly higher vocabulary scores than non–native-born participants (*b* = 0.76, *SE* = 0.21, *t* = 3.63, *p* < .001), the model predicted around 0.76 better scores on average after adjusting for educational attainment.
+
+So the model here explained slightly more variance than the one that only indcluded educational groups, making it a better model on paper - however, for the added number of predictors (1), the increase in explained variance (1%), does not seem that high.
+
+Finally, we will fit an interaction model:
+
+
+```{r interaction model }
+fit_vocab3<- lm(
+  formula = vocab ~ educGroup * nativeBorn,
+  data = vocab
+)
+
+summary(fit_vocab3)
+```
+
+Here, we see that the overall model was statistically significant, *F*(9, 1477) = 61.34, *p* < .001, explaining 26.8% of the variance in vocabulary performance (*R²* = .268). This means this model is slightly better than the education group-only model, but worse than the one that includes both education group and nativeness as two separate predictor.
+
+The interaction terms demonstrated no significant effect (*p* > .05), meaning that education group and nativeness did not have a strong impact on vocabulary score. When we interpret the beta estimates, we see that people with educations of 12 years or less, the beta estimates are positive (*b* > 0), meaning nativeborn speakers perform higher than non-native speakers. However, as the education durations grow, beta retains negative values (*b* < 0): This means that in high-educated groups, being a native speaker was less predictive of vocabulary scores than in lower-educated groups. Once again, this effect remains insignificant. 
+
+Altogether, while both nativeness and education group were strong predictors for vocabulary, we found no interaction between the predictors.
+At a quick glance, it seems the model that included both predictors separately performed best at explaining the variance. However, it was only slightly better than the model that only included education group. Altogether, since it is not desirable to include predictors that add little information to the model, we deem that the best model was: 
+
+$$ Vocabulary Score = a + b * Education Group $$
